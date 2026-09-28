@@ -108,14 +108,29 @@ class HotelAgentRunner:
     """
     def __init__(self, customer_id: int = 3, model_name: Optional[str] = None):
         self.customer_id = customer_id
-        self.has_key = bool(os.environ.get("GROQ_API_KEY"))
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        groq_key = os.environ.get("GROQ_API_KEY")
 
-        if not model_name:
-            model_name = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-
+        self.has_key = False
         self.llm = None
         self.llm_with_tools = None
-        if self.has_key:
+
+        # 1. Priority: Direct OpenAI API if OPENAI_API_KEY is provided
+        if openai_key and openai_key.strip() and not openai_key.startswith("your_"):
+            try:
+                from langchain_openai import ChatOpenAI
+                o_model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+                self.llm = ChatOpenAI(model=o_model, api_key=openai_key.strip(), temperature=0.1)
+                self.llm_with_tools = self.llm.bind_tools(ALL_TOOLS)
+                self.has_key = True
+            except Exception:
+                self.llm = None
+                self.llm_with_tools = None
+
+        # 2. Priority: Groq API (defaulting to openai/gpt-oss-120b)
+        if self.llm_with_tools is None and groq_key and groq_key.strip() and not groq_key.startswith("your_"):
+            if not model_name:
+                model_name = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
             try:
                 self.llm = ChatGroq(
                     model=model_name,
@@ -123,6 +138,7 @@ class HotelAgentRunner:
                     max_retries=2,
                 )
                 self.llm_with_tools = self.llm.bind_tools(ALL_TOOLS)
+                self.has_key = True
             except Exception:
                 self.has_key = False
 

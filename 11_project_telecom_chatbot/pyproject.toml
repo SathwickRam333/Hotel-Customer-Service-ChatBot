@@ -19,4 +19,5 @@ dependencies = [
     "langchain-community",
     "langchain-text-splitters",
     "mem0ai>=2.2.1",
+    "langchain-openai>=1.6.6",
 ]
