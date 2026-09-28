@@ -6,10 +6,12 @@ by Groq (`llama-3.3-70b-versatile`, `qwen/qwen3-32b`).
 """
 import os
 import json
-from typing import List, Dict, Any, Optional
+import re
+from typing import List, Dict, Any, Optional, Tuple
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from booking_tools import ALL_TOOLS
+import hotel_db
 
 TOOL_MAP = {t.name: t for t in ALL_TOOLS}
 
@@ -45,14 +47,62 @@ CRITICAL RULES & OPERATING PROCEDURES:
 6. GENERAL RULE FOR MISSING INFORMATION:
    - If ANY information, service, amenity, policy, or record is not in the PDF documents or database, ALWAYS tell the user to refer to our website for other info (e.g. "Please refer to our website for other information.").
 
-7. TONE:
+7. LONG-TERM GUEST MEMORY & PERSONAL PREFERENCES:
+   - The system maintains permanent memory of guest preferences across all chats.
+   - When the user tells you personal preferences, favorites, or facts (e.g., "my favorite food is chicken", "I prefer non-smoking rooms", "my anniversary is Oct 12"):
+     Call `remember_user_preference` to store it permanently, and acknowledge it warmly.
+   - When the user asks about their remembered details in ANY chat (new or existing, e.g. "what is my favorite food?"):
+     Answer accurately based on the KNOWN GUEST PROFILE & STORED MEMORIES section below or call `get_user_memories`.
+   - Never say you don't know if the fact is present in the KNOWN GUEST PROFILE & STORED MEMORIES section!
+
+8. TONE:
    - Be hospitable, concise, clear, and professional.
 """
 
 
+def parse_memory_declaration(text: str) -> Optional[Tuple[str, str]]:
+    """Extracts explicit memory statements like 'my favorite food is chicken'."""
+    text_clean = text.strip()
+
+    # Pattern: (remember that) my favorite <X> is <Y>
+    m1 = re.search(r"(?:remember\s+(?:that\s+)?)?my\s+favou?rite\s+([\w\s]+?)\s+is\s+([^.,!?\n]+)", text_clean, re.IGNORECASE)
+    if m1:
+        key = f"favorite {m1.group(1).strip().lower()}"
+        val = m1.group(2).strip()
+        return (key, val)
+
+    # Pattern: (remember that) my preferred <X> is <Y>
+    m2 = re.search(r"(?:remember\s+(?:that\s+)?)?my\s+preferred\s+([\w\s]+?)\s+is\s+([^.,!?\n]+)", text_clean, re.IGNORECASE)
+    if m2:
+        key = f"preferred {m2.group(1).strip().lower()}"
+        val = m2.group(2).strip()
+        return (key, val)
+
+    # Pattern: remember that my <X> is <Y>
+    m3 = re.search(r"remember\s+(?:that\s+)?my\s+([\w\s]+?)\s+is\s+([^.,!?\n]+)", text_clean, re.IGNORECASE)
+    if m3:
+        key = m3.group(1).strip().lower()
+        val = m3.group(2).strip()
+        return (key, val)
+
+    return None
+
+
+def parse_memory_query(text: str) -> Optional[str]:
+    """Detects questions asking for remembered personal facts (e.g., 'what is my favorite food?')."""
+    text_clean = text.strip()
+    m = re.search(r"(?:what(?:\s+is|'s)|do\s+you\s+know)\s+my\s+favou?rite\s+([\w\s]+?)(?:\?|$)", text_clean, re.IGNORECASE)
+    if m:
+        return f"favorite {m.group(1).strip().lower()}"
+    m_gen = re.search(r"(?:what(?:\s+is|'s)|do\s+you\s+know)\s+my\s+([\w\s]+?)(?:\?|$)", text_clean, re.IGNORECASE)
+    if m_gen and not any(w in m_gen.group(1).lower() for w in ["booking", "reservation", "room"]):
+        return m_gen.group(1).strip().lower()
+    return None
+
+
 class HotelAgentRunner:
     """
-    Executes multi-step tool-calling with memory and tool tracing.
+    Executes multi-step tool-calling with persistent long-term memory and tool tracing.
     Gracefully handles missing GROQ_API_KEY by falling back to direct tool execution.
     """
     def __init__(self, customer_id: int = 3, model_name: Optional[str] = None):
@@ -75,19 +125,77 @@ class HotelAgentRunner:
             except Exception:
                 self.has_key = False
 
-        self.system_message = SystemMessage(
-            content=SYSTEM_PROMPT + f"\n\nCURRENT ACTIVE CUSTOMER CONTEXT: Customer ID = {customer_id}."
+    def get_system_message(self) -> SystemMessage:
+        """Dynamically injects active guest profile and persistent memories into the prompt."""
+        memories = hotel_db.get_user_memories(self.customer_id)
+        if memories:
+            mem_lines = "\n".join([f"- {k.title()}: {v}" for k, v in memories.items()])
+        else:
+            mem_lines = "(No preferences recorded yet for this customer)"
+
+        content = (
+            SYSTEM_PROMPT +
+            f"\n\nCURRENT ACTIVE CUSTOMER CONTEXT: Customer ID = {self.customer_id}." +
+            f"\n\nKNOWN GUEST PROFILE & STORED MEMORIES (PERSISTENT ACROSS CHATS):\n{mem_lines}\n"
         )
+        return SystemMessage(content=content)
 
     def _fallback_invoke(self, user_input: str) -> Dict[str, Any]:
-        """Direct tool execution fallback."""
-        inp = user_input.lower()
+        """Direct tool execution fallback with full long-term memory support."""
+        inp = user_input.lower().strip()
         steps = []
 
         class StepToolCall:
             def __init__(self, name, args):
                 self.tool = name
                 self.tool_input = args
+
+        # 1. Check if user is sharing a personal preference or fact (e.g. "my favorite food is chicken")
+        decl = parse_memory_declaration(user_input)
+        if decl:
+            k, v = decl
+            hotel_db.save_user_memory(self.customer_id, k, v)
+            msg = f"I've saved that to your guest profile! Your {k} is **{v}**. I will remember this even across new chats."
+            steps.append((StepToolCall("remember_user_preference", {"key": k, "value": v, "customer_id": self.customer_id}), f"Saved {k}={v}"))
+            return {"output": msg, "intermediate_steps": steps}
+
+        # 2. Check if user is querying a remembered preference (e.g. "what is my favorite food?")
+        query_key = parse_memory_query(user_input)
+        if query_key:
+            memories = hotel_db.get_user_memories(self.customer_id)
+            found_val = None
+            matched_key = None
+            for mk, mv in memories.items():
+                if query_key in mk or mk in query_key:
+                    found_val = mv
+                    matched_key = mk
+                    break
+            if found_val:
+                steps.append((StepToolCall("get_user_memories", {"customer_id": self.customer_id}), str(memories)))
+                return {
+                    "output": f"Your {matched_key} is **{found_val}**! I remembered this from our previous conversation.",
+                    "intermediate_steps": steps,
+                }
+            else:
+                return {
+                    "output": f"I don't have your {query_key} saved in your profile yet. You can let me know by saying 'My {query_key} is ...'!",
+                    "intermediate_steps": [],
+                }
+
+        # 3. Check for general memory listing or clearing
+        if any(w in inp for w in ["what do you remember about me", "my preferences", "show my memories", "my profile"]):
+            memories = hotel_db.get_user_memories(self.customer_id)
+            if memories:
+                lines = ["Here are the preferences and details I remember about you:"]
+                for mk, mv in memories.items():
+                    lines.append(f"- **{mk.title()}**: {mv}")
+                return {"output": "\n".join(lines), "intermediate_steps": []}
+            else:
+                return {"output": "I don't have any personal preferences saved for you yet.", "intermediate_steps": []}
+
+        if "clear my memory" in inp or "clear memories" in inp:
+            hotel_db.clear_user_memories(self.customer_id)
+            return {"output": "I have cleared all your stored personal preferences.", "intermediate_steps": []}
 
         if "my booking" in inp or "current reservation" in inp or "show" in inp and "booking" in inp:
             res = TOOL_MAP["list_customer_bookings"].invoke({"customer_id": self.customer_id})
@@ -180,11 +288,20 @@ class HotelAgentRunner:
         user_input = inputs.get("input", "")
         chat_history = inputs.get("chat_history", [])
 
+        # Proactively detect and persist direct memory declarations
+        decl = parse_memory_declaration(user_input)
+        if decl:
+            k, v = decl
+            hotel_db.save_user_memory(self.customer_id, k, v)
+
         if not self.has_key or self.llm_with_tools is None:
             return self._fallback_invoke(user_input)
 
+        # Dynamic system prompt containing updated persistent memories
+        system_message = self.get_system_message()
+
         # Construct message list
-        messages = [self.system_message]
+        messages = [system_message]
         for msg in chat_history:
             if isinstance(msg, (HumanMessage, AIMessage, SystemMessage, ToolMessage)):
                 messages.append(msg)
@@ -218,6 +335,11 @@ class HotelAgentRunner:
                         tool_name = tool_call.get("name")
                         tool_args = tool_call.get("args", {})
                         call_id = tool_call.get("id")
+
+                        # Bind active customer_id if memory or booking tools require it
+                        if tool_name in ("remember_user_preference", "get_user_memories", "list_customer_bookings"):
+                            if "customer_id" not in tool_args or not tool_args.get("customer_id"):
+                                tool_args["customer_id"] = self.customer_id
 
                         if tool_name in TOOL_MAP:
                             try:

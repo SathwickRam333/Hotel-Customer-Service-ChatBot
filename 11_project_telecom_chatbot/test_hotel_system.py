@@ -134,6 +134,27 @@ def test_policy_rag():
     print("    PASS: Positive Grounding test: Check-in & Wi-Fi context retrieved accurately.")
 
 
+def test_long_term_memory():
+    print("\n--- [TEST 4] Testing Long-Term Guest Memory (Cross-Chat Persistence) ---")
+    customer_id = 3
+    hotel_db.clear_user_memories(customer_id)
+
+    # 4.1 Save memory directly and verify
+    hotel_db.save_user_memory(customer_id, "favorite food", "chicken")
+    mems = hotel_db.get_user_memories(customer_id)
+    assert mems.get("favorite food") == "chicken", f"Expected 'chicken', got {mems.get('favorite food')}"
+    print("    PASS: 4.1 Memory saved and retrieved from SQLite successfully.")
+
+    # 4.2 Test agent cross-chat retention
+    from hotel_agent import build_hotel_agent
+    agent = build_hotel_agent(customer_id=customer_id)
+
+    # New chat with empty history
+    query_res = agent.invoke({"input": "What is my favorite food?", "chat_history": []})
+    assert "chicken" in query_res["output"].lower(), f"Agent failed to recall favorite food: {query_res['output']}"
+    print(f"    PASS: 4.2 Agent recalled in a brand new chat: '{query_res['output'].strip()}'")
+
+
 def main():
     print("==========================================================")
     print("   AROHAK Hackathon: Hotel AI System Automated Tests      ")
@@ -141,10 +162,12 @@ def main():
     test_booking_logic()
     test_controlled_tools()
     test_policy_rag()
+    test_long_term_memory()
     print("\n==========================================================")
-    print("   ALL TESTS PASSED SUCCESSFULLY (Items 6 & 7 Verified)   ")
+    print("   ALL TESTS PASSED SUCCESSFULLY (Items 6 & 7 + Memory)   ")
     print("==========================================================")
 
 
 if __name__ == "__main__":
     main()
+

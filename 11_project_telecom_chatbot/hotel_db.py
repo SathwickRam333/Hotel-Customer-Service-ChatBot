@@ -89,6 +89,20 @@ def init_db(db_path: str = DB_PATH):
     )
     """)
 
+    # 5. Long-term User Memory table (persists user facts/preferences across chats)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS user_memories (
+        memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL,
+        memory_key TEXT NOT NULL,
+        memory_value TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (customer_id) REFERENCES users (user_id),
+        UNIQUE(customer_id, memory_key)
+    )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -498,3 +512,72 @@ def cancel_booking(
         "hours_before_checkin": round(hours_remaining, 1),
         "message": message,
     }
+
+
+# =====================================================================
+# LONG-TERM USER MEMORY & PREFERENCE MANAGEMENT
+# =====================================================================
+
+def save_user_memory(customer_id: int, key: str, value: str, db_path: str = DB_PATH) -> bool:
+    """
+    Saves or updates a permanent personal detail, favorite item, or preference for a user.
+    """
+    init_db(db_path)
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO user_memories (customer_id, memory_key, memory_value, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(customer_id, memory_key)
+    DO UPDATE SET memory_value = excluded.memory_value, updated_at = CURRENT_TIMESTAMP
+    """, (customer_id, key.strip().lower(), value.strip()))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_user_memories(customer_id: int, db_path: str = DB_PATH) -> Dict[str, str]:
+    """
+    Retrieves all persistent long-term memories and preferences for a customer.
+    """
+    init_db(db_path)
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    rows = cur.execute("""
+    SELECT memory_key, memory_value
+    FROM user_memories
+    WHERE customer_id = ?
+    ORDER BY updated_at ASC
+    """, (customer_id,)).fetchall()
+    conn.close()
+    return {row["memory_key"]: row["memory_value"] for row in rows}
+
+
+def delete_user_memory(customer_id: int, key: str, db_path: str = DB_PATH) -> bool:
+    """
+    Deletes a specific remembered key for a customer.
+    """
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+    DELETE FROM user_memories
+    WHERE customer_id = ? AND memory_key = ?
+    """, (customer_id, key.strip().lower()))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def clear_user_memories(customer_id: int, db_path: str = DB_PATH) -> bool:
+    """
+    Clears all stored memories for a customer.
+    """
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+    DELETE FROM user_memories
+    WHERE customer_id = ?
+    """, (customer_id,))
+    conn.commit()
+    conn.close()
+    return True

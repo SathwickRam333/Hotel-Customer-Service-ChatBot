@@ -226,6 +226,37 @@ def get_hotel_contact_info(hotel_name_or_city: Optional[str] = None) -> str:
         return f"Error retrieving contact info: {str(e)}"
 
 
+@tool
+def remember_user_preference(key: str, value: str, customer_id: int = 3) -> str:
+    """
+    Saves a persistent personal fact, preference, dietary need, or favorite item for the user
+    (e.g., key="favorite food", value="chicken", or key="room preference", value="high floor").
+    This information is permanently remembered across new chats and sessions.
+    """
+    try:
+        hotel_db.save_user_memory(customer_id=customer_id, key=key, value=value)
+        return f"Successfully saved memory: {key} = {value}. I will remember this across all chats!"
+    except Exception as e:
+        return f"Error saving memory: {str(e)}"
+
+
+@tool
+def get_user_memories(customer_id: int = 3) -> str:
+    """
+    Retrieves all persistent memories, preferences, and personal details saved for the user.
+    """
+    try:
+        memories = hotel_db.get_user_memories(customer_id=customer_id)
+        if not memories:
+            return "No personal preferences or facts stored yet for this user."
+        lines = ["Stored Guest Memories & Preferences:"]
+        for k, v in memories.items():
+            lines.append(f"- {k.title()}: {v}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error retrieving memories: {str(e)}"
+
+
 ALL_TOOLS = [
     search_rooms,
     check_room_availability,
@@ -235,4 +266,7 @@ ALL_TOOLS = [
     cancel_booking,
     get_hotel_policy_info,
     get_hotel_contact_info,
+    remember_user_preference,
+    get_user_memories,
 ]
+

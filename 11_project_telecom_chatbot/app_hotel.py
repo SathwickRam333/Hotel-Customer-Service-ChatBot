@@ -132,7 +132,21 @@ with st.sidebar:
             st.success(f"Indexed {n_chunks} chunks into ChromaDB!")
 
     st.divider()
-    if st.button("🗑️ Clear Chat History", use_container_width=True):
+    st.markdown("#### 🧠 Guest Long-Term Memory")
+    st.caption("Remembers guest preferences (e.g. favorite food, room type) permanently across chats.")
+    user_mems = hotel_db.get_user_memories(st.session_state.customer_id)
+    if user_mems:
+        for mk, mv in user_mems.items():
+            st.markdown(f"- **{mk.title()}**: {mv}")
+        if st.button("🧹 Clear Guest Memories", use_container_width=True):
+            hotel_db.clear_user_memories(st.session_state.customer_id)
+            st.success("Guest memories cleared!")
+            st.rerun()
+    else:
+        st.info("No preferences remembered yet.")
+
+    st.divider()
+    if st.button("🗑️ Start New Chat (Clear Chat History)", use_container_width=True):
         st.session_state.messages = []
         st.session_state.chat_history = []
         st.rerun()
@@ -171,6 +185,15 @@ with tab_chat:
             st.session_state.pending_prompt = "Please cancel my booking BK-1001."
         if st.button("❓ Test Hallucination Rejection (Helicopter)", use_container_width=True):
             st.session_state.pending_prompt = "Does Grand Palace Hotel have a helicopter landing pad for guests?"
+
+    st.markdown("**🧠 Long-Term Memory Shortcuts (Try in Chat 1 -> click 'Start New Chat' -> ask in Chat 2!):**")
+    m_col1, m_col2 = st.columns(2)
+    with m_col1:
+        if st.button("🍗 Tell AI: 'My favorite food is chicken'", use_container_width=True):
+            st.session_state.pending_prompt = "My favorite food is chicken"
+    with m_col2:
+        if st.button("❓ Ask AI: 'What is my favorite food?'", use_container_width=True):
+            st.session_state.pending_prompt = "What is my favorite food?"
 
     st.divider()
 
@@ -292,6 +315,23 @@ with tab_db:
         st.dataframe(pd.DataFrame([dict(sr) for sr in schedule_rows]), use_container_width=True)
     else:
         st.info("No active confirmed bookings on record.")
+
+    st.divider()
+    st.markdown("#### 🧠 Persistent Guest Memories (`user_memories` Table)")
+    st.caption("Live SQLite table storing personal preferences and facts remembered across sessions.")
+    hotel_db.init_db()
+    mem_rows = conn.execute("""
+    SELECT m.memory_id, u.name as customer_name, m.customer_id, m.memory_key, m.memory_value, m.updated_at
+    FROM user_memories m
+    JOIN users u ON m.customer_id = u.user_id
+    ORDER BY m.updated_at DESC
+    """).fetchall()
+    if mem_rows:
+        import pandas as pd
+        st.dataframe(pd.DataFrame([dict(mr) for mr in mem_rows]), use_container_width=True)
+    else:
+        st.info("No guest memories stored in database yet.")
+
     conn.close()
 
 
