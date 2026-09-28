@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 import hotel_db
 import rag_hotel_policy
+from hotel_memory import memory_manager
 from hotel_agent import build_hotel_agent
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -132,14 +133,14 @@ with st.sidebar:
             st.success(f"Indexed {n_chunks} chunks into ChromaDB!")
 
     st.divider()
-    st.markdown("#### 🧠 Guest Long-Term Memory")
-    st.caption("Remembers guest preferences (e.g. favorite food, room type) permanently across chats.")
-    user_mems = hotel_db.get_user_memories(st.session_state.customer_id)
+    st.markdown("#### 🧠 Guest Long-Term Memory (Mem0)")
+    st.caption(f"Engine: **{memory_manager.get_mode_label()}**")
+    user_mems = memory_manager.get_all_memories(st.session_state.customer_id)
     if user_mems:
-        for mk, mv in user_mems.items():
-            st.markdown(f"- **{mk.title()}**: {mv}")
+        for m in user_mems:
+            st.markdown(f"- **{m['key'].title()}**: {m['value']}")
         if st.button("🧹 Clear Guest Memories", use_container_width=True):
-            hotel_db.clear_user_memories(st.session_state.customer_id)
+            memory_manager.clear_memories(st.session_state.customer_id)
             st.success("Guest memories cleared!")
             st.rerun()
     else:

@@ -18,4 +18,5 @@ dependencies = [
     "pypdf",
     "langchain-community",
     "langchain-text-splitters",
+    "mem0ai>=2.2.1",
 ]

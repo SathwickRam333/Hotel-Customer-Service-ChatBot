@@ -231,10 +231,11 @@ def remember_user_preference(key: str, value: str, customer_id: int = 3) -> str:
     """
     Saves a persistent personal fact, preference, dietary need, or favorite item for the user
     (e.g., key="room preference", value="high floor", or key="bed preference", value="king size").
-    This information is permanently remembered across new chats and sessions.
+    This information is permanently remembered across new chats and sessions via Mem0.
     """
     try:
-        hotel_db.save_user_memory(customer_id=customer_id, key=key, value=value)
+        from hotel_memory import memory_manager
+        memory_manager.save_preference(key=key, value=value, customer_id=customer_id)
         return f"Successfully saved memory: {key} = {value}. I will remember this across all chats!"
     except Exception as e:
         return f"Error saving memory: {str(e)}"
@@ -243,16 +244,12 @@ def remember_user_preference(key: str, value: str, customer_id: int = 3) -> str:
 @tool
 def get_user_memories(customer_id: int = 3) -> str:
     """
-    Retrieves all persistent memories, preferences, and personal details saved for the user.
+    Retrieves all persistent memories, preferences, and personal details saved for the user via Mem0.
     """
     try:
-        memories = hotel_db.get_user_memories(customer_id=customer_id)
-        if not memories:
-            return "No personal preferences or facts stored yet for this user."
-        lines = ["Stored Guest Memories & Preferences:"]
-        for k, v in memories.items():
-            lines.append(f"- {k.title()}: {v}")
-        return "\n".join(lines)
+        from hotel_memory import memory_manager
+        profile = memory_manager.get_guest_profile_prompt(customer_id=customer_id)
+        return f"Stored Guest Memories & Preferences (Mem0):\n{profile}"
     except Exception as e:
         return f"Error retrieving memories: {str(e)}"
 

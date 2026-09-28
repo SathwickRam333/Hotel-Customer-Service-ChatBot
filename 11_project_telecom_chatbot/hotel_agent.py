@@ -12,6 +12,7 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from booking_tools import ALL_TOOLS
 import hotel_db
+from hotel_memory import memory_manager
 
 TOOL_MAP = {t.name: t for t in ALL_TOOLS}
 
@@ -126,22 +127,19 @@ class HotelAgentRunner:
                 self.has_key = False
 
     def get_system_message(self) -> SystemMessage:
-        """Dynamically injects active guest profile and persistent memories into the prompt."""
-        memories = hotel_db.get_user_memories(self.customer_id)
-        if memories:
-            mem_lines = "\n".join([f"- {k.title()}: {v}" for k, v in memories.items()])
-        else:
-            mem_lines = "(No preferences recorded yet for this customer)"
+        """Dynamically injects active guest profile and persistent memories into the prompt via Mem0."""
+        profile_str = memory_manager.get_guest_profile_prompt(self.customer_id)
+        mode_label = memory_manager.get_mode_label()
 
         content = (
             SYSTEM_PROMPT +
             f"\n\nCURRENT ACTIVE CUSTOMER CONTEXT: Customer ID = {self.customer_id}." +
-            f"\n\nKNOWN GUEST PROFILE & STORED MEMORIES (PERSISTENT ACROSS CHATS):\n{mem_lines}\n"
+            f"\n\nKNOWN GUEST PROFILE & STORED MEMORIES (ENGINE: {mode_label}):\n{profile_str}\n"
         )
         return SystemMessage(content=content)
 
     def _fallback_invoke(self, user_input: str) -> Dict[str, Any]:
-        """Direct tool execution fallback with full long-term memory support."""
+        """Direct tool execution fallback with full long-term memory support via Mem0."""
         inp = user_input.lower().strip()
         steps = []
 
@@ -154,7 +152,7 @@ class HotelAgentRunner:
         decl = parse_memory_declaration(user_input)
         if decl:
             k, v = decl
-            hotel_db.save_user_memory(self.customer_id, k, v)
+            memory_manager.save_preference(k, v, self.customer_id)
             msg = f"I've saved that to your guest profile! Your {k} is **{v}**. I will remember this even across new chats."
             steps.append((StepToolCall("remember_user_preference", {"key": k, "value": v, "customer_id": self.customer_id}), f"Saved {k}={v}"))
             return {"output": msg, "intermediate_steps": steps}
@@ -162,18 +160,19 @@ class HotelAgentRunner:
         # 2. Check if user is querying a remembered preference (e.g. "what is my preferred room type?")
         query_key = parse_memory_query(user_input)
         if query_key:
-            memories = hotel_db.get_user_memories(self.customer_id)
+            all_mems = memory_manager.get_all_memories(self.customer_id)
             found_val = None
             matched_key = None
             clean_q = query_key.replace("preferred ", "").replace("favorite ", "").strip()
-            for mk, mv in memories.items():
+            for m in all_mems:
+                mk, mv = m.get("key", ""), m.get("value", "")
                 clean_m = mk.replace("preferred ", "").replace("favorite ", "").strip()
-                if query_key in mk or mk in query_key or (clean_q and clean_q in clean_m) or (clean_m and clean_m in clean_q):
+                if query_key in mk or mk in query_key or (clean_q and clean_q in clean_m) or (clean_m and clean_m in clean_q) or clean_q in mv.lower():
                     found_val = mv
                     matched_key = mk
                     break
             if found_val:
-                steps.append((StepToolCall("get_user_memories", {"customer_id": self.customer_id}), str(memories)))
+                steps.append((StepToolCall("get_user_memories", {"customer_id": self.customer_id}), str(all_mems)))
                 return {
                     "output": f"Your {matched_key} is **{found_val}**! I remembered this from our previous conversation.",
                     "intermediate_steps": steps,
@@ -186,17 +185,11 @@ class HotelAgentRunner:
 
         # 3. Check for general memory listing or clearing
         if any(w in inp for w in ["what do you remember about me", "my preferences", "show my memories", "my profile"]):
-            memories = hotel_db.get_user_memories(self.customer_id)
-            if memories:
-                lines = ["Here are the preferences and details I remember about you:"]
-                for mk, mv in memories.items():
-                    lines.append(f"- **{mk.title()}**: {mv}")
-                return {"output": "\n".join(lines), "intermediate_steps": []}
-            else:
-                return {"output": "I don't have any personal preferences saved for you yet.", "intermediate_steps": []}
+            profile_str = memory_manager.get_guest_profile_prompt(self.customer_id)
+            return {"output": f"Here are the preferences and details I remember about you:\n{profile_str}", "intermediate_steps": []}
 
         if "clear my memory" in inp or "clear memories" in inp:
-            hotel_db.clear_user_memories(self.customer_id)
+            memory_manager.clear_memories(self.customer_id)
             return {"output": "I have cleared all your stored personal preferences.", "intermediate_steps": []}
 
         if "my booking" in inp or "current reservation" in inp or "show" in inp and "booking" in inp:
@@ -294,7 +287,7 @@ class HotelAgentRunner:
         decl = parse_memory_declaration(user_input)
         if decl:
             k, v = decl
-            hotel_db.save_user_memory(self.customer_id, k, v)
+            memory_manager.save_preference(k, v, self.customer_id)
 
         if not self.has_key or self.llm_with_tools is None:
             return self._fallback_invoke(user_input)
@@ -366,6 +359,12 @@ class HotelAgentRunner:
 
         if not final_text and messages:
             final_text = messages[-1].content if hasattr(messages[-1], "content") else str(messages[-1])
+
+        if final_text:
+            try:
+                memory_manager.add_interaction(user_input, final_text, self.customer_id)
+            except Exception:
+                pass
 
         return {
             "output": final_text,
