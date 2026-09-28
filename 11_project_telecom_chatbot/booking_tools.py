@@ -230,7 +230,7 @@ def get_hotel_contact_info(hotel_name_or_city: Optional[str] = None) -> str:
 def remember_user_preference(key: str, value: str, customer_id: int = 3) -> str:
     """
     Saves a persistent personal fact, preference, dietary need, or favorite item for the user
-    (e.g., key="favorite food", value="chicken", or key="room preference", value="high floor").
+    (e.g., key="room preference", value="high floor", or key="bed preference", value="king size").
     This information is permanently remembered across new chats and sessions.
     """
     try:

@@ -186,15 +186,6 @@ with tab_chat:
         if st.button("❓ Test Hallucination Rejection (Helicopter)", use_container_width=True):
             st.session_state.pending_prompt = "Does Grand Palace Hotel have a helicopter landing pad for guests?"
 
-    st.markdown("**🧠 Long-Term Memory Shortcuts (Try in Chat 1 -> click 'Start New Chat' -> ask in Chat 2!):**")
-    m_col1, m_col2 = st.columns(2)
-    with m_col1:
-        if st.button("🍗 Tell AI: 'My favorite food is chicken'", use_container_width=True):
-            st.session_state.pending_prompt = "My favorite food is chicken"
-    with m_col2:
-        if st.button("❓ Ask AI: 'What is my favorite food?'", use_container_width=True):
-            st.session_state.pending_prompt = "What is my favorite food?"
-
     st.divider()
 
     # Render Conversation Messages

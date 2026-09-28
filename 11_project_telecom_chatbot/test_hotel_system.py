@@ -140,9 +140,9 @@ def test_long_term_memory():
     hotel_db.clear_user_memories(customer_id)
 
     # 4.1 Save memory directly and verify
-    hotel_db.save_user_memory(customer_id, "favorite food", "chicken")
+    hotel_db.save_user_memory(customer_id, "preferred room type", "Deluxe Suite")
     mems = hotel_db.get_user_memories(customer_id)
-    assert mems.get("favorite food") == "chicken", f"Expected 'chicken', got {mems.get('favorite food')}"
+    assert mems.get("preferred room type") == "Deluxe Suite", f"Expected 'Deluxe Suite', got {mems.get('preferred room type')}"
     print("    PASS: 4.1 Memory saved and retrieved from SQLite successfully.")
 
     # 4.2 Test agent cross-chat retention
@@ -150,9 +150,12 @@ def test_long_term_memory():
     agent = build_hotel_agent(customer_id=customer_id)
 
     # New chat with empty history
-    query_res = agent.invoke({"input": "What is my favorite food?", "chat_history": []})
-    assert "chicken" in query_res["output"].lower(), f"Agent failed to recall favorite food: {query_res['output']}"
+    query_res = agent.invoke({"input": "What is my preferred room type?", "chat_history": []})
+    assert "deluxe suite" in query_res["output"].lower(), f"Agent failed to recall preferred room type: {query_res['output']}"
     print(f"    PASS: 4.2 Agent recalled in a brand new chat: '{query_res['output'].strip()}'")
+
+    # Clean up test memory
+    hotel_db.clear_user_memories(customer_id)
 
 
 def main():

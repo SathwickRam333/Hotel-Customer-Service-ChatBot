@@ -49,9 +49,9 @@ CRITICAL RULES & OPERATING PROCEDURES:
 
 7. LONG-TERM GUEST MEMORY & PERSONAL PREFERENCES:
    - The system maintains permanent memory of guest preferences across all chats.
-   - When the user tells you personal preferences, favorites, or facts (e.g., "my favorite food is chicken", "I prefer non-smoking rooms", "my anniversary is Oct 12"):
+   - When the user tells you personal preferences, favorites, or facts (e.g., "I prefer high floor rooms", "my preferred view is sea view", "my anniversary is Oct 12"):
      Call `remember_user_preference` to store it permanently, and acknowledge it warmly.
-   - When the user asks about their remembered details in ANY chat (new or existing, e.g. "what is my favorite food?"):
+   - When the user asks about their remembered details in ANY chat (new or existing, e.g. "what is my preferred room type?"):
      Answer accurately based on the KNOWN GUEST PROFILE & STORED MEMORIES section below or call `get_user_memories`.
    - Never say you don't know if the fact is present in the KNOWN GUEST PROFILE & STORED MEMORIES section!
 
@@ -61,7 +61,7 @@ CRITICAL RULES & OPERATING PROCEDURES:
 
 
 def parse_memory_declaration(text: str) -> Optional[Tuple[str, str]]:
-    """Extracts explicit memory statements like 'my favorite food is chicken'."""
+    """Extracts explicit memory statements like 'my preferred room type is Deluxe'."""
     text_clean = text.strip()
 
     # Pattern: (remember that) my favorite <X> is <Y>
@@ -89,13 +89,13 @@ def parse_memory_declaration(text: str) -> Optional[Tuple[str, str]]:
 
 
 def parse_memory_query(text: str) -> Optional[str]:
-    """Detects questions asking for remembered personal facts (e.g., 'what is my favorite food?')."""
+    """Detects questions asking for remembered personal facts (e.g., 'what is my preferred room type?')."""
     text_clean = text.strip()
-    m = re.search(r"(?:what(?:\s+is|'s)|do\s+you\s+know)\s+my\s+favou?rite\s+([\w\s]+?)(?:\?|$)", text_clean, re.IGNORECASE)
-    if m:
-        return f"favorite {m.group(1).strip().lower()}"
+    m_pref = re.search(r"(?:what(?:\s+is|'s)|do\s+you\s+know)\s+my\s+(?:preferred|favou?rite)\s+([\w\s]+?)(?:\?|$)", text_clean, re.IGNORECASE)
+    if m_pref:
+        return f"preferred {m_pref.group(1).strip().lower()}"
     m_gen = re.search(r"(?:what(?:\s+is|'s)|do\s+you\s+know)\s+my\s+([\w\s]+?)(?:\?|$)", text_clean, re.IGNORECASE)
-    if m_gen and not any(w in m_gen.group(1).lower() for w in ["booking", "reservation", "room"]):
+    if m_gen and not any(w in m_gen.group(1).lower() for w in ["booking id", "current reservation", "active booking"]):
         return m_gen.group(1).strip().lower()
     return None
 
@@ -150,7 +150,7 @@ class HotelAgentRunner:
                 self.tool = name
                 self.tool_input = args
 
-        # 1. Check if user is sharing a personal preference or fact (e.g. "my favorite food is chicken")
+        # 1. Check if user is sharing a personal preference or fact (e.g. "I prefer high floor rooms")
         decl = parse_memory_declaration(user_input)
         if decl:
             k, v = decl
@@ -159,14 +159,16 @@ class HotelAgentRunner:
             steps.append((StepToolCall("remember_user_preference", {"key": k, "value": v, "customer_id": self.customer_id}), f"Saved {k}={v}"))
             return {"output": msg, "intermediate_steps": steps}
 
-        # 2. Check if user is querying a remembered preference (e.g. "what is my favorite food?")
+        # 2. Check if user is querying a remembered preference (e.g. "what is my preferred room type?")
         query_key = parse_memory_query(user_input)
         if query_key:
             memories = hotel_db.get_user_memories(self.customer_id)
             found_val = None
             matched_key = None
+            clean_q = query_key.replace("preferred ", "").replace("favorite ", "").strip()
             for mk, mv in memories.items():
-                if query_key in mk or mk in query_key:
+                clean_m = mk.replace("preferred ", "").replace("favorite ", "").strip()
+                if query_key in mk or mk in query_key or (clean_q and clean_q in clean_m) or (clean_m and clean_m in clean_q):
                     found_val = mv
                     matched_key = mk
                     break
