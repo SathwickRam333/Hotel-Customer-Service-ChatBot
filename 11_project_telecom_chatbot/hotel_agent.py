@@ -115,7 +115,7 @@ class HotelAgentRunner:
         self.llm = None
         self.llm_with_tools = None
 
-        # 1. Priority: Direct OpenAI API if OPENAI_API_KEY is provided
+        # 1. Primary: Direct OpenAI API if OPENAI_API_KEY is provided
         if openai_key and openai_key.strip() and not openai_key.startswith("your_"):
             try:
                 from langchain_openai import ChatOpenAI
@@ -127,20 +127,24 @@ class HotelAgentRunner:
                 self.llm = None
                 self.llm_with_tools = None
 
-        # 2. Priority: Groq API (defaulting to openai/gpt-oss-120b)
-        if self.llm_with_tools is None and groq_key and groq_key.strip() and not groq_key.startswith("your_"):
+        # 2. Secondary / Backup: Groq API with OpenAI 120B model (runs if OpenAI API is blocked by firewall)
+        self.backup_llm_with_tools = None
+        if groq_key and groq_key.strip() and not groq_key.startswith("your_"):
             if not model_name:
                 model_name = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
             try:
-                self.llm = ChatGroq(
+                b_llm = ChatGroq(
                     model=model_name,
                     temperature=0.1,
                     max_retries=2,
                 )
-                self.llm_with_tools = self.llm.bind_tools(ALL_TOOLS)
+                self.backup_llm_with_tools = b_llm.bind_tools(ALL_TOOLS)
+                if self.llm_with_tools is None:
+                    self.llm = b_llm
+                    self.llm_with_tools = self.backup_llm_with_tools
                 self.has_key = True
             except Exception:
-                self.has_key = False
+                pass
 
     def get_system_message(self) -> SystemMessage:
         """Dynamically injects active guest profile and persistent memories into the prompt via Mem0."""
@@ -335,9 +339,18 @@ class HotelAgentRunner:
                 self.tool = name
                 self.tool_input = args
 
+        active_llm = self.llm_with_tools
         try:
             for _ in range(max_iterations):
-                response: AIMessage = self.llm_with_tools.invoke(messages)
+                try:
+                    response: AIMessage = active_llm.invoke(messages)
+                except Exception as net_err:
+                    # If direct OpenAI endpoint was blocked by network firewall, fall back to Groq OpenAI 120B model
+                    if self.backup_llm_with_tools and active_llm != self.backup_llm_with_tools:
+                        active_llm = self.backup_llm_with_tools
+                        response = active_llm.invoke(messages)
+                    else:
+                        raise net_err
                 messages.append(response)
 
                 # Check if tools need to be executed
