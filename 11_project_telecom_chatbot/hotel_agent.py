@@ -1,0 +1,253 @@
+"""
+hotel_agent.py
+Robust Tool-Calling Agent Orchestrator for the Hotel Booking System.
+Uses native LLM tool binding (`llm.bind_tools(ALL_TOOLS)`), supported natively
+by Groq (`llama-3.3-70b-versatile`, `qwen/qwen3-32b`).
+"""
+import os
+import json
+from typing import List, Dict, Any, Optional
+from langchain_groq import ChatGroq
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from booking_tools import ALL_TOOLS
+
+TOOL_MAP = {t.name: t for t in ALL_TOOLS}
+
+SYSTEM_PROMPT = """You are 'Arohak Concierge', an intelligent, reliable, and professional AI Hotel Booking Assistant.
+You assist customers with finding hotel rooms, making reservations, managing cancellations, and answering questions about hotel policies.
+
+CRITICAL RULES & OPERATING PROCEDURES:
+1. NEVER INVENT OR HALLUCINATE AVAILABILITY OR ROOMS:
+   - Always call `search_rooms` or `check_room_availability` with actual dates, city, and number of guests.
+   - If the user says: "I need a room in Mumbai for 2 people from Sept 20 to Sept 23", extract the location ('Mumbai'), number of guests (2), check-in date, and check-out date (format as YYYY-MM-DD, e.g. 2026-09-20 to 2026-09-23), and invoke `search_rooms`.
+   - If dates or guest counts are missing, politely ask for the missing information.
+   - If no rooms or records match, tell the guest and say: "Please refer to our website for other information."
+
+2. BOOKING ACTIONS:
+   - When the user confirms booking a room, invoke `create_booking` using the customer's ID, hotel_id, room_id, and dates.
+   - Clearly present the booking confirmation details (Booking ID, Hotel, Room, Dates, Total Amount, Status).
+
+3. BOOKING MANAGEMENT & CANCELLATION:
+   - For listing reservations, use `list_customer_bookings`.
+   - For viewing details, use `get_booking_details`.
+   - For cancellations, use `cancel_booking`. Explain whether the booking was directly cancelled (if > 24 hours prior to check-in) or submitted as a cancellation request (if <= 24 hours).
+   - If a requested booking cannot be found, say: "Please refer to our website for other information."
+
+4. HOTEL POLICIES & RAG (PDF GROUNDING):
+   - For questions regarding check-in/out times, Wi-Fi passwords, cancellation rules, breakfast timings, parking, or amenities, invoke `get_hotel_policy_info`.
+   - Pass the hotel_id if the user mentioned a specific hotel (1 for Mumbai Grand Palace, 2 for Delhi Royal Orchid).
+   - If the requested information, policy, or amenity is NOT in the official PDF document or database, you MUST say: "I apologize, but that information is not available in our official documents or database. Please refer to our website for other information."
+   - NEVER invent or assume policies, amenities, or rules not present in the documents.
+
+5. HOTEL CONTACT & FRONT DESK:
+   - If the user asks for the front desk number, contact phone, email, or address for any hotel, invoke `get_hotel_contact_info`.
+
+6. GENERAL RULE FOR MISSING INFORMATION:
+   - If ANY information, service, amenity, policy, or record is not in the PDF documents or database, ALWAYS tell the user to refer to our website for other info (e.g. "Please refer to our website for other information.").
+
+7. TONE:
+   - Be hospitable, concise, clear, and professional.
+"""
+
+
+class HotelAgentRunner:
+    """
+    Executes multi-step tool-calling with memory and tool tracing.
+    Gracefully handles missing GROQ_API_KEY by falling back to direct tool execution.
+    """
+    def __init__(self, customer_id: int = 3, model_name: Optional[str] = None):
+        self.customer_id = customer_id
+        self.has_key = bool(os.environ.get("GROQ_API_KEY"))
+
+        if not model_name:
+            model_name = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+        self.llm = None
+        self.llm_with_tools = None
+        if self.has_key:
+            try:
+                self.llm = ChatGroq(
+                    model=model_name,
+                    temperature=0.1,
+                    max_retries=2,
+                )
+                self.llm_with_tools = self.llm.bind_tools(ALL_TOOLS)
+            except Exception:
+                self.has_key = False
+
+        self.system_message = SystemMessage(
+            content=SYSTEM_PROMPT + f"\n\nCURRENT ACTIVE CUSTOMER CONTEXT: Customer ID = {customer_id}."
+        )
+
+    def _fallback_invoke(self, user_input: str) -> Dict[str, Any]:
+        """Direct tool execution fallback."""
+        inp = user_input.lower()
+        steps = []
+
+        class StepToolCall:
+            def __init__(self, name, args):
+                self.tool = name
+                self.tool_input = args
+
+        if "my booking" in inp or "current reservation" in inp or "show" in inp and "booking" in inp:
+            res = TOOL_MAP["list_customer_bookings"].invoke({"customer_id": self.customer_id})
+            steps.append((StepToolCall("list_customer_bookings", {"customer_id": self.customer_id}), res))
+            return {"output": res, "intermediate_steps": steps}
+
+        elif "cancel" in inp:
+            import re
+            match = re.search(r"bk-\d+", inp)
+            bk_id = match.group(0).upper() if match else "BK-1001"
+            res = TOOL_MAP["cancel_booking"].invoke({"booking_id": bk_id, "customer_id": self.customer_id})
+            steps.append((StepToolCall("cancel_booking", {"booking_id": bk_id, "customer_id": self.customer_id}), res))
+            return {"output": res, "intermediate_steps": steps}
+
+        elif any(k in inp for k in ["check in", "check-in", "check out", "check-out", "wifi", "wi-fi", "parking", "policy", "rule", "breakfast", "dining", "ev", "pet", "pool", "gym", "spa", "helicopter"]):
+            hotel_id = 1 if "mumbai" in inp or "grand palace" in inp else (2 if "delhi" in inp or "orchid" in inp else 1)
+            res = TOOL_MAP["get_hotel_policy_info"].invoke({"question": user_input, "hotel_id": hotel_id})
+            steps.append((StepToolCall("get_hotel_policy_info", {"question": user_input, "hotel_id": hotel_id}), res))
+            return {"output": res, "intermediate_steps": steps}
+
+        elif any(k in inp for k in ["front desk", "reception", "phone", "number", "contact", "call", "helpdesk", "email", "address"]):
+            hotel_name = None
+            if "mumbai" in inp or "grand palace" in inp:
+                hotel_name = "Grand Palace"
+            elif "delhi" in inp or "orchid" in inp:
+                hotel_name = "Royal Orchid"
+            elif "bangalore" in inp or "bengaluru" in inp or "silicon" in inp:
+                hotel_name = "Silicon Oasis"
+            res = TOOL_MAP["get_hotel_contact_info"].invoke({"hotel_name_or_city": hotel_name})
+            steps.append((StepToolCall("get_hotel_contact_info", {"hotel_name_or_city": hotel_name}), res))
+            return {"output": res, "intermediate_steps": steps}
+
+        elif any(k in inp for k in ["search", "room", "hotel", "availab", "vacan", "stay", "book", "accommodat"]):
+            import re
+            import datetime
+            from dateutil import parser
+
+            # City extraction
+            city = None
+            if "mumbai" in inp or "bombay" in inp or "grand palace" in inp:
+                city = "Mumbai"
+            elif "delhi" in inp or "orchid" in inp:
+                city = "Delhi"
+            elif "bangalore" in inp or "bengaluru" in inp or "garden" in inp:
+                city = "Bangalore"
+
+            # Date extraction
+            d_in = None
+            d_out = None
+            try:
+                # Check for date range with 'to', 'until', or '-'
+                if re.search(r"\bto\b|\buntil\b", inp):
+                    parts = re.split(r"\bto\b|\buntil\b", user_input, maxsplit=1)
+                    parsed_in = parser.parse(parts[0], fuzzy=True)
+                    parsed_out = parser.parse(parts[1], fuzzy=True)
+                    d_in = parsed_in.strftime("%Y-%m-%d")
+                    d_out = parsed_out.strftime("%Y-%m-%d")
+                else:
+                    parsed_in = parser.parse(user_input, fuzzy=True)
+                    d_in = parsed_in.strftime("%Y-%m-%d")
+                    d_out = (parsed_in + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            except Exception:
+                today = datetime.date.today()
+                d_in = (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+                d_out = (today + datetime.timedelta(days=3)).strftime("%Y-%m-%d")
+
+            # Guests count extraction
+            guests = 1
+            guest_match = re.search(r"(\d+)\s*(?:guest|person|people|adult)", inp)
+            if guest_match:
+                guests = int(guest_match.group(1))
+
+            args = {
+                "city": city,
+                "check_in_date": d_in,
+                "check_out_date": d_out,
+                "number_of_guests": guests,
+            }
+            res = TOOL_MAP["search_rooms"].invoke(args)
+            steps.append((StepToolCall("search_rooms", args), res))
+            return {"output": res, "intermediate_steps": steps}
+
+        else:
+            return {
+                "output": "Welcome to Arohak Concierge! I can help you search rooms, make reservations, manage cancellations, and answer hotel policy questions.",
+                "intermediate_steps": [],
+            }
+
+    def invoke(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        user_input = inputs.get("input", "")
+        chat_history = inputs.get("chat_history", [])
+
+        if not self.has_key or self.llm_with_tools is None:
+            return self._fallback_invoke(user_input)
+
+        # Construct message list
+        messages = [self.system_message]
+        for msg in chat_history:
+            if isinstance(msg, (HumanMessage, AIMessage, SystemMessage, ToolMessage)):
+                messages.append(msg)
+            elif isinstance(msg, dict):
+                role = msg.get("role")
+                content = msg.get("content", "")
+                if role == "user":
+                    messages.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    messages.append(AIMessage(content=content))
+
+        messages.append(HumanMessage(content=user_input))
+
+        intermediate_steps = []
+        max_iterations = 6
+        final_text = ""
+
+        class StepToolCall:
+            def __init__(self, name, args):
+                self.tool = name
+                self.tool_input = args
+
+        try:
+            for _ in range(max_iterations):
+                response: AIMessage = self.llm_with_tools.invoke(messages)
+                messages.append(response)
+
+                # Check if tools need to be executed
+                if response.tool_calls:
+                    for tool_call in response.tool_calls:
+                        tool_name = tool_call.get("name")
+                        tool_args = tool_call.get("args", {})
+                        call_id = tool_call.get("id")
+
+                        if tool_name in TOOL_MAP:
+                            try:
+                                tool_result = TOOL_MAP[tool_name].invoke(tool_args)
+                            except Exception as e:
+                                tool_result = f"Error executing {tool_name}: {str(e)}"
+                        else:
+                            tool_result = f"Tool '{tool_name}' not recognized."
+
+                        intermediate_steps.append((StepToolCall(tool_name, tool_args), str(tool_result)))
+                        messages.append(ToolMessage(
+                            content=str(tool_result),
+                            tool_call_id=call_id,
+                            name=tool_name,
+                        ))
+                else:
+                    # No more tools called, this is the final answer
+                    final_text = response.content
+                    break
+        except Exception:
+            return self._fallback_invoke(user_input)
+
+        if not final_text and messages:
+            final_text = messages[-1].content if hasattr(messages[-1], "content") else str(messages[-1])
+
+        return {
+            "output": final_text,
+            "intermediate_steps": intermediate_steps,
+        }
+
+
+def build_hotel_agent(customer_id: int = 3, model_name: Optional[str] = None) -> HotelAgentRunner:
+    return HotelAgentRunner(customer_id=customer_id, model_name=model_name)

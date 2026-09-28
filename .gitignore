@@ -1,0 +1,26 @@
+# Environments and dependencies
+.venv/
+venv/
+env/
+
+# Sensitive files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Python byte-code and cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local database & vector stores
+chroma_store/
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
