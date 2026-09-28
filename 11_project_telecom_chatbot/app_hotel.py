@@ -63,6 +63,16 @@ if "pending_prompt" not in st.session_state:
 # Sidebar: Controls, Hackathon Badges, and Live Setup
 with st.sidebar:
     st.markdown("### 🏨 AROHAK Concierge")
+
+    # LLM Engine Status Indicator
+    openai_key_val = os.environ.get("OPENAI_API_KEY", "").strip()
+    if openai_key_val and not openai_key_val.startswith("your_"):
+        st.success(f"🤖 **Engine: OpenAI** (`{os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')}`)")
+    elif os.environ.get("GROQ_API_KEY"):
+        st.info(f"⚡ **Engine: Groq** (`{os.environ.get('GROQ_MODEL', 'openai/gpt-oss-120b')}`)")
+    else:
+        st.warning("💻 **Engine: Local Offline Fallback**")
+
     st.divider()
 
     # Customer Persona Switcher

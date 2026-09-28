@@ -216,9 +216,29 @@ def answer_policy_question(query: str, hotel_id: Optional[int] = None, llm: Opti
     relevant_chunks = [c[1] for c in matched_chunks if c[0] >= best_score]
     context_str = "\n\n".join(relevant_chunks)
 
-    # Attempt neural LLM synthesis if GROQ_API_KEY is available
+    # Attempt neural LLM synthesis: prioritize OPENAI_API_KEY
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if openai_key and openai_key.strip() and not openai_key.startswith("your_"):
+        try:
+            from langchain_openai import ChatOpenAI
+            chat_llm = ChatOpenAI(
+                model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+                api_key=openai_key.strip(),
+                temperature=0,
+                max_tokens=512,
+            )
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", RAG_SYSTEM_PROMPT),
+                ("human", "Question: {question}\nContext: {context}"),
+            ])
+            chain = prompt | chat_llm | StrOutputParser()
+            return chain.invoke({"question": query, "context": context_str})
+        except Exception:
+            pass
+
+    # Secondary fallback to Groq if GROQ_API_KEY is available
     if os.environ.get("GROQ_API_KEY"):
-        candidate_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "llama3-8b-8192"]
+        candidate_models = ["openai/gpt-oss-120b", "llama-3.1-8b-instant", "llama3-8b-8192"]
         preferred_model = os.environ.get("GROQ_MODEL")
         if preferred_model and preferred_model not in candidate_models:
             candidate_models.insert(0, preferred_model)
